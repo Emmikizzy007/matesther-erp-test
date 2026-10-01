@@ -141,6 +141,17 @@ main { min-width: 0; }
 .letter-table th:last-child, .letter-table td:last-child { text-align: right; }
 .letter-table tfoot { border-top: 1.5px solid #9aaf62; font-weight: 700; }
 .letter-total-box { border: 1px solid #cad2b0; background: #f9fbf4; padding: 14px 18px; }
+/* Monthly bank payment sheet - Owner-only printable document */
+.letter-summary { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-top: 5mm; }
+.letter-summary > div { border: 1px solid #cad2b0; background: #f9fbf4; padding: 8px 10px; break-inside: avoid; }
+.letter-summary-label { font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.06em; color: #6b7a52; }
+.letter-summary-value { margin-top: 2px; font: 700 14px Georgia, serif; color: #30312e; }
+.letter-paragraph { margin-top: 4mm; font-size: 12px; line-height: 1.55; color: #3d3f43; }
+.letter-note { margin-top: 5mm; font-size: 10px; line-height: 1.5; color: #6b6f76; }
+.letter-signatures { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 10mm; break-inside: avoid; }
+.letter-signatures p { font-size: 10.5px; color: #55585e; }
+.letter-signature-line { display: block; margin: 9mm 0 1.5mm; border-bottom: 1px solid #9a9d93; }
+.letter-signature-name { font-weight: 700; color: #30312e; }
 .letter-footer { margin-top: 14mm; font-size: 11px; break-inside: avoid; }
 .letter-footer .letter-color-rule { height: 5px; transform: skewY(1deg); }
 .letter-footer-row { display: flex; align-items: center; gap: 10px; padding-top: 5mm; color: #829c47; font-style: italic; font-weight: 700; line-height: 1.4; }

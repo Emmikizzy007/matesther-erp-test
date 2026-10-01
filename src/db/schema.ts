@@ -7,6 +7,8 @@ import {
   timestamp,
   date,
   varchar,
+  index,
+  uniqueIndex,
 } from "drizzle-orm/pg-core";
 
 // ---------- Organizations ----------
@@ -102,19 +104,52 @@ export const orderItems = pgTable("order_items", {
 });
 
 // ---------- Workers ----------
+// One record per person, whatever mix of roles they hold. A cutter who also
+// tailors and inspects keeps a single profile: see workerRoles below.
 export const workers = pgTable("workers", {
   id: serial("id").primaryKey(),
   organizationId: integer("organization_id").references(() => organizations.id),
   name: text("name").notNull(),
   phone: text("phone"),
+  // Legacy single specialty. Kept so old records, exports and payroll history
+  // keep working; the authoritative list of roles is worker_roles.
   specialty: text("specialty").notNull().default("Tailor"),
   paymentType: text("payment_type").notNull().default("PER_PIECE"),
   paymentRate: integer("payment_rate").notNull().default(0),
   isInspector: boolean("is_inspector").notNull().default(false),
+  // PRODUCTION | SUPPORT | NON_PRODUCTION - derived from the person's roles by
+  // the server, never trusted from the browser.
+  staffType: text("staff_type").notNull().default("PRODUCTION"),
+  department: text("department"),
+  jobTitle: text("job_title"),
+  // Optional bank details for the Owner-only monthly bank payment sheet.
+  bankName: text("bank_name"),
+  bankAccountName: text("bank_account_name"),
+  bankAccountNumber: text("bank_account_number"),
   status: text("status").notNull().default("ACTIVE"),
   archivedAt: timestamp("archived_at"),
   createdAt: timestamp("created_at").defaultNow(),
 });
+
+// ---------- Worker roles (many roles per person) ----------
+export const workerRoles = pgTable(
+  "worker_roles",
+  {
+    id: serial("id").primaryKey(),
+    workerId: integer("worker_id")
+      .references(() => workers.id, { onDelete: "cascade" })
+      .notNull(),
+    role: text("role").notNull(),
+    // PRODUCTION | SUPPORT | INSPECTION | NON_PRODUCTION
+    kind: text("kind").notNull().default("PRODUCTION"),
+    isPrimary: boolean("is_primary").notNull().default(false),
+    createdAt: timestamp("created_at").defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("worker_roles_worker_role_unique").on(table.workerId, table.role),
+    index("worker_roles_worker_id_idx").on(table.workerId),
+  ]
+);
 
 // ---------- Size breakdown per order item ----------
 export const orderItemSizes = pgTable("order_item_sizes", {
@@ -150,6 +185,9 @@ export const productionOperations = pgTable("production_operations", {
     .notNull(),
   stage: text("stage").notNull(),
   workerId: integer("worker_id").references(() => workers.id),
+  // Which of the person's roles they worked in for this job (Cutter, Tailor,
+  // Weaver, ...). Snapshot so a later role change never rewrites history.
+  roleLabel: text("role_label"),
   // Agreed price for THIS job/stage, not the worker's general profile.
   // Null on historical records falls back to their legacy rate.
   pieceRate: integer("piece_rate"),

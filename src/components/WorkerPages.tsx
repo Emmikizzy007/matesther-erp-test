@@ -110,7 +110,15 @@ export default function WorkerPages({ mode }: { mode: Mode }) {
         <PageHeader title="Profile" subtitle="Your Matesther production profile" />
         <Card className="max-w-lg p-5 space-y-3 text-sm">
           <div><p className="text-xs font-semibold uppercase text-slate-400">Name</p><p className="font-bold text-lg">{p.name}</p></div>
-          <div><p className="text-xs font-semibold uppercase text-slate-400">Specialty</p><p className="font-semibold">{p.specialty}</p></div>
+          <div>
+            <p className="text-xs font-semibold uppercase text-slate-400">My roles</p>
+            <div className="mt-1 flex flex-wrap gap-1.5">
+              {((p.roles ?? []).length ? p.roles : [{ role: p.specialty, kind: "PRODUCTION" }]).map((row: any) => (
+                <span key={row.role} className="rounded-full border border-matesther-100 bg-matesther-50 px-2 py-0.5 text-xs font-semibold text-matesther-800">{row.role}</span>
+              ))}
+            </div>
+            <p className="mt-1 text-[11px] text-slate-500">You are paid for the work you actually do - every role is on this one profile.</p>
+          </div>
           <div><p className="text-xs font-semibold uppercase text-slate-400">Phone</p><p>{p.phone || "-"}</p></div>
           <div><p className="text-xs font-semibold uppercase text-slate-400">Payment</p><p className="font-semibold">{p.paymentType.replace("_", " ")} - {rate}</p></div>
           <div><p className="text-xs font-semibold uppercase text-slate-400">Signed in as</p><p>{user?.name} ({user?.email})</p></div>
@@ -229,7 +237,7 @@ export default function WorkerPages({ mode }: { mode: Mode }) {
           {d.todayJobs.map((job: any) => <div key={job.id} className="p-4">
             <div className="flex items-start justify-between gap-2"><div className="min-w-0"><p className="font-semibold text-slate-900">{job.customer}</p><p className="mt-0.5 text-xs text-slate-500">{job.orderNumber} • {job.batchNumber}</p></div><Badge status={job.status} /></div>
             <p className="mt-3 font-semibold text-matesther-900">{job.garment}{job.size ? ` • Size ${job.size}` : ""}{job.color ? ` • ${job.color}` : ""}</p>
-            <p className="mt-1 text-sm text-slate-600">{stageLabel(job.stage)} • Due {fmtDate(job.expectedCompletionDate)}</p>
+            <p className="mt-1 text-sm text-slate-600">{stageLabel(job.stage)}{job.roleLabel ? ` as ${job.roleLabel}` : ""} • Due {fmtDate(job.expectedCompletionDate)}</p>
             <div className="mt-3 grid grid-cols-3 gap-2 rounded-lg bg-slate-50 p-2 text-center text-xs"><div><p className="text-slate-500">Received</p><strong>{job.quantityReceived}</strong></div><div><p className="text-slate-500">Left</p><strong>{job.quantityRemaining}</strong></div><div><p className="text-slate-500">To inspect</p><strong className="text-violet-700">{job.pendingInspection}</strong></div></div>
             <p className="mt-2 text-xs font-semibold text-matesther-800">{p.paymentType === "PER_PIECE" ? `${naira(job.pieceRate ?? p.paymentRate)} per approved piece` : "Monthly salary"}</p>
             {["IN_PROGRESS", "SUBMITTED"].includes(job.status) && job.availableToSubmit > 0 && <Btn className="mt-3 w-full" variant="secondary" onClick={() => { setSubmitErr(""); setQty(String(job.availableToSubmit)); setSubmit(job); }}>Submit finished pieces</Btn>}

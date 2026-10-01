@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import { db } from "@/db";
-import { sessions, users, workers } from "@/db/schema";
+import { sessions, users, workers, workerRoles } from "@/db/schema";
 import { eq } from "drizzle-orm";
+import { normalizeKind, roleMatchesStage, type WorkerRole } from "@/lib/worker-roles";
 import { hashSessionToken, readSessionToken } from "@/lib/session";
 import { rejectCrossSiteMutation } from "@/lib/request-security";
 
@@ -77,10 +78,12 @@ function comparableName(value: string): string {
  * Never match a substring or return another worker's production history.
  */
 export async function getLinkedWorkerId(user: SessionUser): Promise<number | null> {
-  if (!["WORKER", "PRODUCTION_MANAGER"].includes(user.role) || !user.organizationId) return null;
-  // Supervisors opt in to the factory role through Users. Regular Workers can
-  // still be added before their Workers record and matched unambiguously later.
-  if (user.role === "PRODUCTION_MANAGER" && !user.workerId) return null;
+  if (!["OWNER", "WORKER", "PRODUCTION_MANAGER"].includes(user.role) || !user.organizationId) return null;
+  // Owners only ever link explicitly, never by name: an owner is not assumed to
+  // work in the factory. Supervisors and Workers opt in through Users the same
+  // way. Regular Workers can still be added before their Workers record exists
+  // and be matched unambiguously later.
+  if (user.role !== "WORKER" && !user.workerId) return null;
   if (user.workerId) {
     const [linked] = await db.select({ id: workers.id, organizationId: workers.organizationId, status: workers.status })
       .from(workers).where(eq(workers.id, user.workerId)).limit(1);
@@ -100,16 +103,46 @@ export async function getLinkedWorkerId(user: SessionUser): Promise<number | nul
   return competing ? null : candidates[0].id;
 }
 
+/** Saved roles for one person; the legacy specialty is folded in elsewhere. */
+async function loadRolesFor(workerId: number): Promise<WorkerRole[]> {
+  const rows = await db.select().from(workerRoles).where(eq(workerRoles.workerId, workerId));
+  return rows.map((row) => ({ role: row.role, kind: normalizeKind(row.kind, row.role), isPrimary: row.isPrimary }));
+}
+
 /** Self-dealing safeguards for a supervisor who is also a Cutter. */
 export async function productionAccess(user: SessionUser) {
   const workerId = user.role === "PRODUCTION_MANAGER" ? await getLinkedWorkerId(user) : null;
   const [profile] = workerId
     ? await db.select({ specialty: workers.specialty }).from(workers).where(eq(workers.id, workerId)).limit(1)
     : [];
-  const cutterSupervisor = user.role === "PRODUCTION_MANAGER" && profile?.specialty.toLowerCase() === "cutter";
+  // Multi-role aware: somebody who cuts uniforms is a cutter-supervisor even if
+  // cutting is their second role (Cutter + Tailor + Inspector, etc).
+  const roles = workerId ? await loadRolesFor(workerId) : [];
+  const cutterSupervisor =
+    user.role === "PRODUCTION_MANAGER" &&
+    (roles.some((row) => row.kind !== "INSPECTION" && roleMatchesStage(row.role, "CUTTING")) ||
+      (!roles.length && profile?.specialty.toLowerCase() === "cutter"));
   return {
     workerId,
     cutterSupervisor,
     canAssignCutting: user.role === "OWNER" || (user.role === "PRODUCTION_MANAGER" && !cutterSupervisor),
   };
+}
+
+/**
+ * Separation of duties: nobody approves their own submitted work, however many
+ * roles they hold. A Cutter + Inspection Officer, a Tailor + Inspector and a
+ * supervisor who also sews are all blocked by this one server-side rule.
+ */
+export async function selfInspectionBlock(user: SessionUser, operationWorkerId: number | null | undefined) {
+  if (!operationWorkerId) return null;
+  const linkedWorkerId = await getLinkedWorkerId(user);
+  if (!linkedWorkerId || linkedWorkerId !== operationWorkerId) return null;
+  return NextResponse.json(
+    {
+      error:
+        "You cannot inspect or approve your own production work. Ask the Owner or another inspector to check this job.",
+    },
+    { status: 403 }
+  );
 }

@@ -4,8 +4,52 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { Plus, Pencil, Phone, Trash2, Archive, RotateCcw } from "lucide-react";
 import { Card, PageHeader, Badge, Loading, EmptyState, Modal, Field, inputCls, Btn } from "@/components/ui";
-import { naira, fmtDate, stageLabel, WORKER_SPECIALTIES } from "@/lib/format";
+import { naira, fmtDate, stageLabel } from "@/lib/format";
 import { useAuth } from "@/lib/auth";
+import {
+  ALL_KNOWN_ROLES,
+  INSPECTION_ROLES,
+  NON_PRODUCTION_ROLES,
+  PRODUCTION_ROLES,
+  SUPPORT_ROLES,
+  staffTypeFor,
+  staffTypeLabel,
+  type RoleKind,
+} from "@/lib/worker-roles";
+
+/**
+ * One person, many roles. A Cutter who also tailors and inspects keeps ONE
+ * record here - never two. Non-production staff (security, sales, office,
+ * management) simply have no production role.
+ */
+const ROLE_GROUPS: { label: string; hint: string; roles: readonly string[]; kind: RoleKind }[] = [
+  { label: "Production roles", hint: "Can be given production work at the matching stage", roles: PRODUCTION_ROLES, kind: "PRODUCTION" },
+  { label: "Production support", hint: "Help a Tailor or another stage (weaving, taping, trimming)", roles: SUPPORT_ROLES, kind: "SUPPORT" },
+  { label: "Inspection", hint: "May inspect work - never their own submitted work", roles: INSPECTION_ROLES, kind: "INSPECTION" },
+  { label: "Non-production staff", hint: "Salaried work with no production specialty", roles: NON_PRODUCTION_ROLES, kind: "NON_PRODUCTION" },
+];
+
+const emptyForm = {
+  name: "", phone: "", roles: [] as string[], primaryRole: "", customRole: "", customKind: "PRODUCTION" as RoleKind,
+  department: "", jobTitle: "", paymentType: "PER_PIECE", paymentRate: "", status: "ACTIVE",
+  bankName: "", bankAccountName: "", bankAccountNumber: "",
+};
+
+function kindOf(role: string): RoleKind {
+  return ALL_KNOWN_ROLES.find((entry) => entry.role.toLowerCase() === role.toLowerCase())?.kind ?? "PRODUCTION";
+}
+
+function formFromWorker(person: any) {
+  const roles: string[] = (person.roles ?? []).map((row: any) => row.role);
+  const primary = (person.roles ?? []).find((row: any) => row.isPrimary)?.role ?? roles[0] ?? "";
+  return {
+    ...emptyForm,
+    name: person.name, phone: person.phone || "", roles, primaryRole: primary,
+    department: person.department || "", jobTitle: person.jobTitle || "",
+    paymentType: person.paymentType, paymentRate: String(person.paymentRate ?? ""), status: person.status,
+    bankName: person.bankName || "", bankAccountName: person.bankAccountName || "", bankAccountNumber: person.bankAccountNumber || "",
+  };
+}
 
 export default function WorkersPage() {
   const { user } = useAuth();
@@ -16,7 +60,7 @@ export default function WorkersPage() {
   const [loadError, setLoadError] = useState("");
   const [modal, setModal] = useState(false);
   const [editing, setEditing] = useState<any>(null);
-  const [form, setForm] = useState({ name: "", phone: "", specialty: "Tailor", paymentType: "PER_PIECE", paymentRate: "", status: "ACTIVE", isInspector: false });
+  const [form, setForm] = useState({ ...emptyForm });
   const [history, setHistory] = useState<any>(null);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [err, setErr] = useState("");
@@ -65,7 +109,14 @@ export default function WorkersPage() {
       const res = await fetch("/api/workers", {
         method: editing ? "PUT" : "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...form, id: editing?.id, paymentRate: Number(form.paymentRate) || 0 }),
+        body: JSON.stringify({
+          ...form,
+          id: editing?.id,
+          // The server re-derives every role kind from its own catalogue.
+          roles: form.roles.map((role) => ({ role, kind: kindOf(role), isPrimary: role === form.primaryRole })),
+          specialty: form.primaryRole || form.jobTitle || form.department || "Staff",
+          paymentRate: Number(form.paymentRate) || 0,
+        }),
       });
       const d = await res.json();
       if (!res.ok) throw new Error(d.error || "Failed to save");
@@ -95,10 +146,10 @@ export default function WorkersPage() {
     <div>
       <PageHeader
         title="Workers"
-        subtitle="Cutters, tailors, buttonhole, button tacking, ironers and packers - who is doing what"
+        subtitle="One record per person, whatever mix of roles they hold - cutters, tailors, monogrammers, production support, inspectors and salaried staff"
         action={<>
           <Btn variant="secondary" onClick={() => setShowArchived((current) => !current)}>{showArchived ? "Active only" : "Show archived"}</Btn>
-          {isOwner && <Btn onClick={() => { setEditing(null); setForm({ name: "", phone: "", specialty: "Tailor", paymentType: "PER_PIECE", paymentRate: "", status: "ACTIVE", isInspector: false }); setErr(""); setModal(true); }}>
+          {isOwner && <Btn onClick={() => { setEditing(null); setForm({ ...emptyForm }); setErr(""); setModal(true); }}>
             <Plus className="w-4 h-4" /> Add Worker
           </Btn>}
         </>}
@@ -110,7 +161,7 @@ export default function WorkersPage() {
               <thead>
                 <tr className="text-left text-[11px] uppercase text-slate-500 border-b border-slate-100">
                   <th className="px-5 py-3">Worker</th>
-                  <th className="px-3 py-3">Specialty</th>
+                  <th className="px-3 py-3">Roles (one person, many roles)</th>
                   {isOwner && <th className="px-3 py-3">Pay</th>}
                   <th className="px-3 py-3 text-right">Current Tasks</th>
                   <th className="px-3 py-3 text-right">Assigned</th>
@@ -128,13 +179,20 @@ export default function WorkersPage() {
                       <p className="font-semibold">{w.name}</p>
                       <p className="text-xs text-slate-500 flex items-center gap-1"><Phone className="w-3 h-3" />{w.phone || "-"}</p>
                     </td>
-                    <td className="px-3 py-3">
-                      {w.specialty}
-                      {w.isInspector && (
-                        <span className="ml-1.5 inline-block text-[10px] font-bold bg-violet-100 text-violet-800 border border-violet-200 rounded-full px-1.5 py-0.5 align-middle">
-                          Also inspects
-                        </span>
-                      )}
+                    <td className="px-3 py-3 max-w-[280px]">
+                      <div className="flex flex-wrap gap-1">
+                        {(w.roles ?? []).map((row: any) => (
+                          <span key={row.role} className={`inline-block rounded-full border px-1.5 py-0.5 text-[10px] font-semibold ${
+                            row.kind === "INSPECTION" ? "border-violet-200 bg-violet-50 text-violet-800"
+                              : row.kind === "NON_PRODUCTION" ? "border-slate-200 bg-slate-50 text-slate-600"
+                                : row.kind === "SUPPORT" ? "border-amber-200 bg-amber-50 text-amber-800"
+                                  : "border-matesther-100 bg-matesther-50 text-matesther-800"}`}>
+                            {row.role}
+                          </span>
+                        ))}
+                        {(w.roles ?? []).length === 0 && <span className="text-xs text-slate-400">No roles yet</span>}
+                      </div>
+                      <p className="mt-1 text-[10px] uppercase tracking-wide text-slate-400">{staffTypeLabel(w.staffType)}</p>
                     </td>
                     {isOwner && <td className="px-3 py-3 text-xs">
                       {w.paymentType.replace("_", " ")}<br />
@@ -151,7 +209,7 @@ export default function WorkersPage() {
                       {isOwner && <>
                         <button title={`Edit ${w.name}`} aria-label={`Edit ${w.name}`} onClick={() => {
                           setEditing(w);
-                          setForm({ name: w.name, phone: w.phone || "", specialty: w.specialty, paymentType: w.paymentType, paymentRate: String(w.paymentRate), status: w.status, isInspector: !!w.isInspector });
+                          setForm(formFromWorker(w));
                           setErr(""); setModal(true);
                         }} className="p-1 text-slate-500 hover:text-matesther-700"><Pencil className="w-4 h-4" /></button>
                         {w.status === "ACTIVE" ? <button title={w.hasHistory ? `Archive ${w.name}` : `Delete ${w.name}`} aria-label={w.hasHistory ? `Archive ${w.name}` : `Delete ${w.name}`}
@@ -172,31 +230,88 @@ export default function WorkersPage() {
         <form onSubmit={save} className="grid sm:grid-cols-2 gap-3">
           <Field label="Full name *" className="sm:col-span-2"><input required value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className={inputCls} placeholder="e.g. Mrs. Aisha Bello" /></Field>
           <Field label="Phone"><input value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} className={inputCls} placeholder="+234 ..." /></Field>
-          <Field label="Specialty">
-            <select value={form.specialty} onChange={(e) => setForm({ ...form, specialty: e.target.value })} className={inputCls}>
-              {WORKER_SPECIALTIES.map((s) => <option key={s} value={s}>{s}</option>)}
-            </select>
-          </Field>
+          <div className="sm:col-span-2 rounded-xl border border-slate-200 p-3">
+            <p className="text-sm font-bold text-slate-800">Roles this person holds</p>
+            <p className="mt-0.5 text-xs text-slate-500">Tick everything they do. One person can be a Cutter, a Tailor and an Inspector - keep them on this one record instead of creating a second worker.</p>
+            <div className="mt-3 grid gap-3 sm:grid-cols-2">
+              {ROLE_GROUPS.map((group) => (
+                <div key={group.label}>
+                  <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">{group.label}</p>
+                  <p className="mb-1 text-[11px] text-slate-400">{group.hint}</p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {group.roles.map((role) => {
+                      const checked = form.roles.includes(role);
+                      return (
+                        <label key={role} className={`inline-flex cursor-pointer items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-semibold ${
+                          checked ? "border-matesther-600 bg-matesther-50 text-matesther-800" : "border-slate-200 text-slate-600 hover:bg-slate-50"}`}>
+                          <input type="checkbox" className="accent-matesther-700" checked={checked}
+                            onChange={(e) => {
+                              const roles = e.target.checked ? [...form.roles, role] : form.roles.filter((item) => item !== role);
+                              setForm({ ...form, roles, primaryRole: roles.includes(form.primaryRole) ? form.primaryRole : roles[0] ?? "" });
+                            }} />
+                          {role}
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div className="mt-3 grid gap-2 sm:grid-cols-[1fr_auto_auto]">
+              <Field label="Other role not listed">
+                <input value={form.customRole} onChange={(e) => setForm({ ...form, customRole: e.target.value })} className={inputCls} placeholder="e.g. Sewing Machine Operator" />
+              </Field>
+              <Field label="Type">
+                <select value={form.customKind} onChange={(e) => setForm({ ...form, customKind: e.target.value as RoleKind })} className={inputCls}>
+                  <option value="PRODUCTION">Production</option>
+                  <option value="SUPPORT">Support</option>
+                  <option value="INSPECTION">Inspection</option>
+                  <option value="NON_PRODUCTION">Non-production</option>
+                </select>
+              </Field>
+              <Btn variant="secondary" onClick={() => {
+                const role = form.customRole.trim();
+                if (!role || form.roles.includes(role)) return;
+                setForm({ ...form, roles: [...form.roles, role], primaryRole: form.primaryRole || role, customRole: "" });
+              }}>Add role</Btn>
+            </div>
+            <p className="mt-2 text-xs font-semibold text-slate-600">
+              This person will be: <span className="text-matesther-800">{staffTypeLabel(staffTypeFor(form.roles.map((role) => ({ role, kind: kindOf(role) }))))}</span>
+              {form.roles.some((role) => kindOf(role) === "INSPECTION") && " • inspection role: they can never approve their own work"}
+            </p>
+          </div>
+          {form.roles.length > 1 && (
+            <Field label="Primary role (shown on reports)" className="sm:col-span-2">
+              <select value={form.primaryRole} onChange={(e) => setForm({ ...form, primaryRole: e.target.value })} className={inputCls}>
+                {form.roles.map((role) => <option key={role} value={role}>{role}</option>)}
+              </select>
+            </Field>
+          )}
+          <Field label="Department (optional)"><input value={form.department} onChange={(e) => setForm({ ...form, department: e.target.value })} className={inputCls} placeholder="e.g. Tailoring floor, Security" /></Field>
+          <Field label="Job title (optional)"><input value={form.jobTitle} onChange={(e) => setForm({ ...form, jobTitle: e.target.value })} className={inputCls} placeholder="e.g. Security Guard, Sales Officer" /></Field>
           <Field label="Payment type">
             <select value={form.paymentType} onChange={(e) => setForm({ ...form, paymentType: e.target.value })} className={inputCls}>
-              <option value="PER_PIECE">Per piece</option>
+              <option value="PER_PIECE">Per piece (production)</option>
               <option value="DAILY">Daily</option>
-              <option value="MONTHLY">Monthly</option>
+              <option value="MONTHLY">Monthly salary</option>
             </select>
           </Field>
           {form.paymentType === "PER_PIECE" ? <p className="self-end rounded-lg border border-matesther-100 bg-matesther-50 p-2 text-xs text-matesther-800">Agree the price per garment when assigning each production job. This profile does not fix one price for all clothes.</p>
             : <Field label={form.paymentType === "MONTHLY" ? "Monthly salary (₦)" : "Daily rate (₦)"}><input type="number" min="0" value={form.paymentRate} onChange={(e) => setForm({ ...form, paymentRate: e.target.value })} className={inputCls} /></Field>}
-          <label className="flex items-center gap-2 text-sm text-slate-700 sm:col-span-2">
-            <input type="checkbox" checked={!!form.isInspector} onChange={(e) => setForm({ ...form, isInspector: e.target.checked })} className="accent-matesther-700" />
-            <span>
-              Also inspects production work - <span className="text-slate-500">they'll appear in the Inspection Queue's “Inspectors on duty”</span>
-            </span>
-          </label>
+          <div className="sm:col-span-2 rounded-xl border border-slate-200 p-3">
+            <p className="text-sm font-bold text-slate-800">Bank details (for the monthly bank payment sheet)</p>
+            <p className="mt-0.5 text-xs text-slate-500">Owner-only. These appear on the printable payment sheet you send to the bank and are never shown to Project Managers or Workers.</p>
+            <div className="mt-2 grid gap-2 sm:grid-cols-3">
+              <Field label="Bank"><input value={form.bankName} onChange={(e) => setForm({ ...form, bankName: e.target.value })} className={inputCls} placeholder="e.g. GTBank" /></Field>
+              <Field label="Account name"><input value={form.bankAccountName} onChange={(e) => setForm({ ...form, bankAccountName: e.target.value })} className={inputCls} /></Field>
+              <Field label="Account number"><input value={form.bankAccountNumber} onChange={(e) => setForm({ ...form, bankAccountNumber: e.target.value })} className={inputCls} inputMode="numeric" /></Field>
+            </div>
+          </div>
           {editing && (
             <Field label="Status" className="sm:col-span-2">
               <select value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })} className={inputCls}>
                 <option value="ACTIVE">Active</option>
-                <option value="INACTIVE">Inactive</option>
+                <option value="INACTIVE">Inactive (archived - history is kept)</option>
               </select>
             </Field>
           )}
