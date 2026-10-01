@@ -4,12 +4,10 @@ import { db } from "@/db";
 import { productionOperations, productionBatches, orders, customers, workers, orderItems, products } from "@/db/schema";
 import { refreshBatchAndOrder } from "@/lib/server";
 import { guard, getSessionUser, getLinkedWorkerId, productionAccess, ANYONE } from "@/lib/authz";
+import { loadWorkerRoles } from "@/lib/people";
+import { canWorkStage, deriveRoles, eligibleRolesForStage, isProductionRole, roleLabels, stageRoleLabel } from "@/lib/worker-roles";
 
 const STATUSES = ["PENDING", "IN_PROGRESS", "SUBMITTED", "COMPLETED", "ON_HOLD", "CANCELLED"];
-const STAGE_SPECIALTIES: Record<string, string> = {
-  CUTTING: "Cutter", SEWING: "Tailor", MONOGRAMMING: "Monogrammer", BUTTONHOLE: "Buttonhole",
-  BUTTON_TACKING: "Button Tacking", IRONING: "Ironer", PACKING: "Packer",
-};
 
 export async function GET(req: Request) {
   const denied = await guard(req, ANYONE);
@@ -20,10 +18,10 @@ export async function GET(req: Request) {
     return NextResponse.json([], { headers: { "Cache-Control": "private, no-store" } });
   try {
     const query = new URL(req.url).searchParams;
-    const [ops, batches, orderRows, customerRows, workerRows, items, catalog] = await Promise.all([
+    const [ops, batches, orderRows, customerRows, workerRows, items, catalog, roleMap] = await Promise.all([
       db.select().from(productionOperations), db.select().from(productionBatches), db.select().from(orders),
       db.select().from(customers), db.select().from(workers), db.select().from(orderItems),
-      db.select({ id: products.id, name: products.name }).from(products),
+      db.select({ id: products.id, name: products.name }).from(products), loadWorkerRoles(),
     ]);
     const byBatch = new Map(batches.map((batch) => [batch.id, batch]));
     const byOrder = new Map(orderRows.map((order) => [order.id, order]));
@@ -48,6 +46,9 @@ export async function GET(req: Request) {
         orderId: order?.id ?? null, orderNumber: order?.orderNumber ?? "-", dueDate: order?.dueDate ?? null,
         customer: byCustomer.get(order?.customerId ?? -1)?.name ?? "-",
         workerName: byWorker.get(op.workerId ?? -1)?.name ?? null,
+        workerRoles: byWorker.has(op.workerId ?? -1)
+          ? roleLabels(byWorker.get(op.workerId ?? -1)!, roleMap.get(op.workerId ?? -1) ?? [])
+          : [],
         paymentType: byWorker.get(op.workerId ?? -1)?.paymentType ?? null,
         pendingInspection: Math.max(0, op.quantityCompleted - op.quantityInspected),
       };
@@ -98,12 +99,19 @@ export async function PUT(req: Request) {
     const workerId = body.workerId === undefined ? current.workerId : body.workerId ? Number(body.workerId) : null;
     const changedWorker = workerId !== current.workerId;
     const [person] = workerId ? await db.select().from(workers).where(eq(workers.id, workerId)).limit(1) : [];
+    const roleMap = await loadWorkerRoles();
+    const personRoles = person ? deriveRoles(person, roleMap.get(person.id) ?? []) : [];
     if (workerId && (!person || person.status !== "ACTIVE" || person.organizationId !== session.organizationId))
       return NextResponse.json({ error: "Choose an active Matesther worker." }, { status: 400 });
-    if (access?.cutterSupervisor && person?.specialty.toLowerCase() === "cutter" && workerId !== current.workerId)
+    // A cutter-supervisor (Cutter in ANY of their roles) may never move Cutting
+    // work to themselves or to another Cutter.
+    const cuttingRole = (roles: typeof personRoles) => roles.some((row) => isProductionRole(row) && canWorkStage({ specialty: null }, [row], "CUTTING"));
+    if (access?.cutterSupervisor && person && cuttingRole(personRoles) && workerId !== current.workerId)
       return NextResponse.json({ error: "Cutter assignments must be made by the Owner or a non-cutting supervisor." }, { status: 403 });
-    if (person && STAGE_SPECIALTIES[current.stage] && person.specialty.toLowerCase() !== STAGE_SPECIALTIES[current.stage].toLowerCase())
-      return NextResponse.json({ error: `${current.stage.replaceAll("_", " ")} needs a ${STAGE_SPECIALTIES[current.stage]}.` }, { status: 400 });
+    if (person && !canWorkStage(person, personRoles, current.stage))
+      return NextResponse.json({
+        error: `${current.stage.replaceAll("_", " ")} needs a ${stageRoleLabel(current.stage)}. ${person.name}'s roles are: ${roleLabels(person, personRoles).join(", ") || "none"} - add the role under Workers or choose someone else.`,
+      }, { status: 400 });
     if (changedWorker && (current.quantityCompleted > 0 || current.quantityInspected > 0 || current.quantityApproved > 0))
       return NextResponse.json({ error: "This job already has production history. Keep the assigned worker; use a new batch to split the work." }, { status: 400 });
 
@@ -130,8 +138,13 @@ export async function PUT(req: Request) {
     const remaining = Math.max(0, received - current.quantityApproved - rejected);
     if (status === "COMPLETED" && (current.quantityApproved < 1 || remaining > 0))
       return NextResponse.json({ error: "Inspect and approve the work before completing this stage." }, { status: 400 });
+    const roleLabel = person
+      ? changedWorker
+        ? eligibleRolesForStage(person, personRoles, current.stage)[0]?.role ?? null
+        : current.roleLabel ?? eligibleRolesForStage(person, personRoles, current.stage)[0]?.role ?? null
+      : null;
     const [updated] = await db.update(productionOperations).set({
-      workerId, pieceRate, quantityReceived: received, quantityCompleted: completed,
+      workerId, pieceRate, roleLabel, quantityReceived: received, quantityCompleted: completed,
       quantityRejected: rejected, quantityRemaining: remaining, status,
       submittedAt: status === "SUBMITTED" && completed > current.quantityInspected ? current.submittedAt ?? new Date() : current.submittedAt,
       expectedCompletionDate: body.expectedCompletionDate === undefined ? current.expectedCompletionDate : body.expectedCompletionDate || null,

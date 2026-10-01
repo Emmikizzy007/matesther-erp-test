@@ -24,9 +24,21 @@ import {
   Btn,
 } from "@/components/ui";
 import { naira, fmtDate, stageLabel, EXPENSE_CATEGORIES, PAYMENT_METHODS, STAGES } from "@/lib/format";
+import { roleMatchesStage } from "@/lib/worker-roles";
 import { useAuth } from "@/lib/auth";
 
 const STAGE_ORDER = STAGES as readonly string[];
+
+/** One person, many roles - the assignment pickers use every saved role. */
+function canDoStage(person: any, stage: string): boolean {
+  if ((person.staffType ?? "PRODUCTION") === "NON_PRODUCTION") return false;
+  const roles = (person.roles ?? []).length ? person.roles : [{ role: person.specialty, kind: "PRODUCTION" }];
+  return roles.some((row: any) => (row.kind === "PRODUCTION" || row.kind === "SUPPORT") && roleMatchesStage(row.role, stage));
+}
+function roleSummary(person: any): string {
+  const labels = (person.roles ?? []).map((row: any) => row.role).join(", ");
+  return labels || person.specialty || "";
+}
 
 export default function OrderDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
@@ -644,7 +656,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
             <Field label="Assigned worker">
               <select value={opModal.workerId || ""} onChange={(e) => setOpModal({ ...opModal, workerId: e.target.value ? Number(e.target.value) : null, pieceRate: null })} className={inputCls}>
                 <option value="">Unassigned</option>
-                {workers.filter((w) => w.status === "ACTIVE" && (!expectedSpecialty[opModal.stage] || w.specialty === expectedSpecialty[opModal.stage])).map((w) => <option key={w.id} value={w.id}>{w.name} - {w.specialty}</option>)}
+                {workers.filter((w) => w.status === "ACTIVE" && canDoStage(w, opModal.stage)).map((w) => <option key={w.id} value={w.id}>{w.name} - {roleSummary(w)}</option>)}
               </select>
             </Field>
             {workers.find((w) => w.id === Number(opModal.workerId))?.paymentType === "PER_PIECE" && <Field label="Agreed pay per approved garment (₦) *">
@@ -727,7 +739,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
           <Field label="Cutter">
             <select value={batchForm.workerId} onChange={(e) => setBatchForm({ ...batchForm, workerId: e.target.value, cuttingRate: "" })} className={inputCls}>
               <option value="">Assign later</option>
-              {workers.filter((w) => w.status === "ACTIVE" && w.specialty === "Cutter").map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
+              {workers.filter((w) => w.status === "ACTIVE" && canDoStage(w, "CUTTING")).map((w) => <option key={w.id} value={w.id}>{w.name} - {roleSummary(w)}</option>)}
             </select>
           </Field>
           {workers.find((w) => String(w.id) === batchForm.workerId)?.paymentType === "PER_PIECE" && <Field label="Agreed cutting pay per garment (₦) *">
@@ -737,7 +749,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
           <Field label="Tailor">
             <select value={batchForm.tailorId} onChange={(e) => setBatchForm({ ...batchForm, tailorId: e.target.value, sewingRate: "" })} className={inputCls}>
               <option value="">Assign after cutting</option>
-              {workers.filter((w) => w.status === "ACTIVE" && w.specialty === "Tailor").map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
+              {workers.filter((w) => w.status === "ACTIVE" && canDoStage(w, "SEWING")).map((w) => <option key={w.id} value={w.id}>{w.name} - {roleSummary(w)}</option>)}
             </select>
           </Field>
           {workers.find((w) => String(w.id) === batchForm.tailorId)?.paymentType === "PER_PIECE" && <Field label="Agreed sewing pay per garment (₦) *">

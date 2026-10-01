@@ -19,6 +19,8 @@ import { desc } from "drizzle-orm";
 import { batchProgress } from "@/lib/server";
 import { workerAccruals, buildGrowth, currentMonth } from "@/lib/payroll";
 import { guard, getSessionUser, ANYONE } from "@/lib/authz";
+import { loadWorkerRoles } from "@/lib/people";
+import { deriveRoles } from "@/lib/worker-roles";
 import { getWorkerDashboard } from "@/lib/worker-dashboard";
 
 const STAGES = ["CUTTING", "SEWING", "MONOGRAMMING", "BUTTONHOLE", "BUTTON_TACKING", "IRONING", "PACKING", "DELIVERY"];
@@ -210,6 +212,7 @@ export async function GET(req: Request) {
         })
         .map(opContext);
 
+      const roleMap = await loadWorkerRoles();
       const workerActivity = workerRows
         .map((w) => {
           const mine = opRows.filter((o) => o.workerId === w.id);
@@ -220,6 +223,7 @@ export async function GET(req: Request) {
           return {
             name: w.name,
             specialty: w.specialty,
+            roles: deriveRoles(w, roleMap.get(w.id) ?? []).map((row) => row.role),
             status: w.status,
             activeJobs: mine.filter((o) => o.status === "IN_PROGRESS" || o.status === "SUBMITTED").length,
             assigned: mine.reduce((s, o) => s + (o.quantityReceived ?? 0), 0),

@@ -12,6 +12,8 @@ import {
 } from "@/db/schema";
 import { getLinkedWorkerId, type SessionUser } from "@/lib/authz";
 import { inspectionPieceRate } from "@/lib/job-pay";
+import { loadWorkerRoles } from "@/lib/people";
+import { deriveRoles } from "@/lib/worker-roles";
 
 /** Personal jobs and earnings, also available to a manager for their own factory work. No company-level figures. */
 export async function getWorkerDashboard(user: SessionUser) {
@@ -19,6 +21,9 @@ export async function getWorkerDashboard(user: SessionUser) {
   const [profile] = workerId
     ? await db.select().from(workers).where(eq(workers.id, workerId)).limit(1)
     : [];
+  // One record, many roles: the worker sees every role they hold.
+  const roleMap = await loadWorkerRoles();
+  const myRoles = profile ? deriveRoles(profile, roleMap.get(profile.id) ?? []) : [];
 
   if (!profile || profile.organizationId !== user.organizationId) {
     return {
@@ -102,7 +107,7 @@ export async function getWorkerDashboard(user: SessionUser) {
   return {
     view: "worker" as const,
     linked: true,
-    profile: { ...profile, perPiece },
+    profile: { ...profile, perPiece, roles: myRoles },
     todayJobs: journal.filter((job) => ["IN_PROGRESS", "SUBMITTED", "PENDING"].includes(job.status)),
     earnings: {
       today: sumSince(today),

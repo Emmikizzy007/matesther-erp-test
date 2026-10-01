@@ -5,8 +5,10 @@ import { orders, orderItems, orderItemSizes, productionBatches, productionOperat
 import { STAGES } from "@/lib/format";
 import { refreshBatchAndOrder } from "@/lib/server";
 import { guard, getSessionUser, productionAccess, OWNER, STAFF } from "@/lib/authz";
+import { loadWorkerRoles } from "@/lib/people";
+import { canWorkStage, eligibleRolesForStage, stageRoleLabel } from "@/lib/worker-roles";
 
-type Assignment = { id: number | null; rate: number | null };
+type Assignment = { id: number | null; rate: number | null; roleLabel?: string | null };
 
 export async function GET(req: Request) {
   const denied = await guard(req, STAFF);
@@ -69,20 +71,25 @@ export async function POST(req: Request) {
         return NextResponse.json({ error: `Only ${Math.max(0, targetSize.quantity - allocated)} unassigned ${size} garment(s) remain for this item.` }, { status: 400 });
     }
 
-    async function resolveWorker(raw: unknown, rawRate: unknown, specialty: string): Promise<Assignment> {
-      if (!raw) return { id: null, rate: null };
+    // One person, many roles: eligibility comes from ALL their roles, never
+    // from a single specialty field.
+    const roleMap = await loadWorkerRoles();
+    async function resolveWorker(raw: unknown, rawRate: unknown, stage: string): Promise<Assignment> {
+      if (!raw) return { id: null, rate: null, roleLabel: null };
       const id = Number(raw);
       const [person] = await db.select().from(workers).where(eq(workers.id, id)).limit(1);
-      if (!person || person.status !== "ACTIVE" || person.organizationId !== order.organizationId || person.specialty.toLowerCase() !== specialty.toLowerCase())
-        throw new Error(`Select an active ${specialty} from Matesther's Workers page.`);
-      if (person.paymentType !== "PER_PIECE") return { id, rate: null };
+      const roles = person ? roleMap.get(person.id) : undefined;
+      if (!person || person.status !== "ACTIVE" || person.organizationId !== order.organizationId || !canWorkStage(person, roles ?? [], stage))
+        throw new Error(`Select an active ${stageRoleLabel(stage)} (or another role allowed to do this work) from Matesther's Workers page.`);
+      const roleLabel = eligibleRolesForStage(person, roles ?? [], stage)[0]?.role ?? stageRoleLabel(stage);
+      if (person.paymentType !== "PER_PIECE") return { id, rate: null, roleLabel };
       const rate = Number(rawRate);
       if (!Number.isSafeInteger(rate) || rate < 1)
         throw new Error(`Enter the agreed amount per piece for ${person.name} on this batch.`);
-      return { id, rate };
+      return { id, rate, roleLabel };
     }
-    const cutter = await resolveWorker(body.workerId, body.cuttingRate, "Cutter");
-    const tailor = await resolveWorker(body.tailorId, body.sewingRate, "Tailor");
+    const cutter = await resolveWorker(body.workerId, body.cuttingRate, "CUTTING");
+    const tailor = await resolveWorker(body.tailorId, body.sewingRate, "SEWING");
     if (tailor.id && sizes.length && !size)
       return NextResponse.json({ error: "Choose a size for the Tailor. Create another batch for each additional size." }, { status: 400 });
     if (body.expectedCompletionDate && !/^\d{4}-\d{2}-\d{2}$/.test(String(body.expectedCompletionDate)))
@@ -103,7 +110,7 @@ export async function POST(req: Request) {
         const assignment = stage === "CUTTING" ? cutter : stage === "SEWING" ? tailor : { id: null, rate: null };
         return {
           productionBatchId: newBatch.id, stage,
-          workerId: assignment.id, pieceRate: assignment.rate,
+          workerId: assignment.id, pieceRate: assignment.rate, roleLabel: assignment.roleLabel ?? null,
           quantityReceived: stage === "CUTTING" ? quantity : 0,
           quantityRemaining: stage === "CUTTING" ? quantity : 0,
           quantityCompleted: 0, quantityRejected: 0,

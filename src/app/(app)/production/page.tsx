@@ -3,10 +3,16 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { Search, ClipboardCheck } from "lucide-react";
+import { roleMatchesStage } from "@/lib/worker-roles";
 import { Card, PageHeader, Badge, Loading, Modal, Field, inputCls, Btn } from "@/components/ui";
 import { fmtDate, stageLabel, STAGES } from "@/lib/format";
 
-const STAGE_SPECIALTIES: Record<string, string> = { CUTTING: "Cutter", SEWING: "Tailor", MONOGRAMMING: "Monogrammer", BUTTONHOLE: "Buttonhole", BUTTON_TACKING: "Button Tacking", IRONING: "Ironer", PACKING: "Packer", DELIVERY: "Packer" };
+/** One person, many roles: offer everyone whose saved roles cover this stage. */
+function canWorkStage(person: any, stage: string): boolean {
+  if ((person.staffType ?? "PRODUCTION") === "NON_PRODUCTION") return false;
+  const roles = (person.roles ?? []).length ? person.roles : [{ role: person.specialty, kind: "PRODUCTION" }];
+  return roles.some((row: any) => (row.kind === "PRODUCTION" || row.kind === "SUPPORT") && roleMatchesStage(row.role, stage));
+}
 const COLS = ["PENDING", "IN_PROGRESS", "SUBMITTED", "COMPLETED", "ON_HOLD"];
 const COL_LABEL: Record<string, string> = {
   PENDING: "Pending",
@@ -196,7 +202,7 @@ export default function ProductionPage() {
             <Field label="Worker">
               <select value={selected.workerId || ""} onChange={(e) => setSelected({ ...selected, workerId: e.target.value ? Number(e.target.value) : null, pieceRate: null })} className={inputCls}>
                 <option value="">Unassigned</option>
-                {workers.filter((w) => w.status === "ACTIVE" && (!STAGE_SPECIALTIES[selected.stage] || w.specialty === STAGE_SPECIALTIES[selected.stage])).map((w) => <option key={w.id} value={w.id}>{w.name} - {w.specialty}</option>)}
+                {workers.filter((w) => w.status === "ACTIVE" && canWorkStage(w, selected.stage)).map((w) => <option key={w.id} value={w.id}>{w.name} - {(w.roles ?? []).map((row: any) => row.role).join(", ") || w.specialty}</option>)}
               </select>
             </Field>
             {workers.find((w) => w.id === Number(selected.workerId))?.paymentType === "PER_PIECE" && <Field label="Agreed pay per approved garment (₦) *">
