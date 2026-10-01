@@ -25,3 +25,18 @@ Use **one existing email and password**. An inspector who also cuts uniforms nee
 This particular release adds no new database fields beyond those already described in `deploy/upgrade-current-client.sql`. If that file has already been applied to the **client** Supabase project, push the updated code to the client GitHub repository and wait for Netlify to publish. If it has **not** been applied, make a backup and run it in the correct client Supabase project **before** deploying this code. It is designed to be repeatable and preserves business records.
 
 **Never run `deploy/full-setup.sql` or `deploy/schema-only.sql` on an existing client project.** Those files are for brand-new empty databases; `full-setup.sql` contains a destructive demo-data reset.
+
+## Multi-role staff, the bank payment sheet and WhatsApp sharing
+
+This release adds one more additive SQL upgrade. Apply it **before** pushing the
+new code, in the same client Supabase project.
+
+1. Open the client Supabase **SQL Editor**, paste all of `deploy/upgrade-worker-roles.sql`, and Run. It is repeatable, creates the new `worker_roles` table and the extra worker/production columns, and backfills every existing worker's current specialty as their first role. It contains no TRUNCATE or DROP and does not touch orders, production, receipts or payroll history.
+2. Push the updated application code to the client GitHub repository and wait for Netlify to publish.
+3. **Workers** now records one person with as many roles as they really have. Tick every role (for example Cutter + Tailor + Inspection Officer) on the one record - never create a second worker for the same person. Choose a primary role; it is what reports show. Production support roles (Weaver, Taper, Trimmer, Helper) and non-production staff (Security, Sales, Director, Management, Administration, IT, Accounts, Office Assistant, Cleaner, Driver, Support Staff) are on the same list. Non-production staff are salaried and are never offered production work.
+4. Assigning a job now checks **all** of the person's roles, and each assignment stores the role it used (for example "Sewing - as Weaver"). A multi-role worker sees every job of every role under **My Jobs**.
+5. **Separation of duties:** holding an Inspection Officer role never allows somebody to inspect their own submitted work. The server blocks it for cutters, tailors, support workers and supervisors alike. The existing cutter-supervisor rules are unchanged and still enforced server-side.
+6. **Bank Payment Sheet** (Finance > Bank Payment Sheet) is Owner-only. Choose the month, then Print / Save as PDF and send the file to the bank. It shows staff name, role(s), department, payment type, basic salary, piecework, overtime, total due, already paid, balance, payment status and total payroll, plus each person's bank details when recorded (Workers > edit > Bank details). Project Managers and Workers cannot open it and the API refuses them.
+7. **WhatsApp sharing:** on a payment receipt or delivery sheet, use **Send on WhatsApp** to open a chat with the message prepared, or **Copy customer link** to copy a private link. Links are signed, expire after 30 days and show only that customer document - never wages, costs or profitability. Payroll and the bank sheet deliberately have no share button and cannot be shared as a link.
+
+    Optional but recommended: in Netlify > Site configuration > Environment variables, add `DOCUMENT_SHARE_SECRET` with a long random value so share links are signed with their own secret (otherwise the database URL is used as the signing key).

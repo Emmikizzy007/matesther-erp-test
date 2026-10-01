@@ -1,6 +1,7 @@
 import { db } from "@/db";
 import {
   workers,
+  workerRoles,
   productionOperations,
   stageInspections,
   workerPayments,
@@ -8,6 +9,8 @@ import {
 } from "@/db/schema";
 import { eq } from "drizzle-orm";
 import { inspectionEarnings } from "@/lib/job-pay";
+import { groupRoles } from "@/lib/people";
+import { deriveRoles } from "@/lib/worker-roles";
 
 /* ---------------- month helpers ---------------- */
 
@@ -141,6 +144,114 @@ export async function workerHistory(workerId: number, month: string) {
     .where(eq(workerPayments.workerId, workerId))
     .orderBy(workerPayments.paymentDate);
   return { history, payments };
+}
+
+/* ---------------- monthly bank payment sheet ---------------- */
+
+export interface PayrollSheetRow {
+  workerId: number;
+  name: string;
+  roles: string[];
+  staffType: string;
+  department: string | null;
+  jobTitle: string | null;
+  paymentType: string;
+  pieces: number;
+  basic: number;
+  piecework: number;
+  overtime: number;
+  due: number;
+  paid: number;
+  balance: number;
+  status: "PAID" | "PART" | "UNPAID";
+  bankName: string | null;
+  bankAccountName: string | null;
+  bankAccountNumber: string | null;
+}
+
+export interface PayrollSheet {
+  month: string;
+  label: string;
+  rows: PayrollSheetRow[];
+  totals: { staff: number; basic: number; piecework: number; overtime: number; due: number; paid: number; balance: number };
+}
+
+/**
+ * The Owner-only monthly sheet that goes to the bank: one line per person with
+ * their roles, department, basic salary or piecework, overtime, amount due,
+ * what has already been paid and the balance.
+ *
+ * Only approved production work is paid (stage_inspections), exactly as on the
+ * payroll screen, so the sheet can never overstate wages.
+ */
+export async function payrollSheet(month: string): Promise<PayrollSheet> {
+  const [people, ops, insps, pays, ots, roleRows] = await Promise.all([
+    db.select().from(workers),
+    db.select().from(productionOperations),
+    db.select().from(stageInspections),
+    db.select().from(workerPayments),
+    db.select().from(workerOvertime),
+    db.select().from(workerRoles),
+  ]);
+  const roleMap = groupRoles(roleRows);
+  const rows: PayrollSheetRow[] = [];
+
+  for (const person of people) {
+    const mine = ops.filter((operation) => operation.workerId === person.id);
+    const byId = new Map(mine.map((operation) => [operation.id, operation]));
+    let pieces = 0;
+    let piecework = 0;
+    for (const check of insps) {
+      const operation = byId.get(check.productionOperationId);
+      if (!operation || monthKey(check.inspectedAt) !== month) continue;
+      pieces += check.quantityApproved;
+      piecework += inspectionEarnings(check, operation, person);
+    }
+    const activeDuringMonth = person.status === "ACTIVE" || (!!person.archivedAt && month <= monthKey(person.archivedAt));
+    const startedBy = !person.createdAt || month >= monthKey(person.createdAt);
+    const basic = person.paymentType === "MONTHLY" && activeDuringMonth && startedBy ? person.paymentRate ?? 0 : 0;
+    const overtime = ots.filter((row) => row.workerId === person.id && monthKey(row.workedOn) === month)
+      .reduce((sum, row) => sum + (row.amount ?? 0), 0);
+    const paid = pays.filter((row) => row.workerId === person.id && row.periodMonth === month)
+      .reduce((sum, row) => sum + (row.amount ?? 0), 0);
+    const due = basic + piecework + overtime;
+    if (due <= 0 && paid <= 0) continue; // nobody with nothing to pay on the bank sheet
+    rows.push({
+      workerId: person.id,
+      name: person.name,
+      roles: deriveRoles(person, roleMap.get(person.id) ?? []).map((row) => row.role),
+      staffType: person.staffType,
+      department: person.department,
+      jobTitle: person.jobTitle,
+      paymentType: person.paymentType,
+      pieces,
+      basic,
+      piecework,
+      overtime,
+      due,
+      paid,
+      balance: due - paid,
+      status: paid <= 0 ? "UNPAID" : paid >= due ? "PAID" : "PART",
+      bankName: person.bankName,
+      bankAccountName: person.bankAccountName,
+      bankAccountNumber: person.bankAccountNumber,
+    });
+  }
+
+  rows.sort((a, b) => b.due - a.due || a.name.localeCompare(b.name));
+  const totals = rows.reduce(
+    (sum, row) => ({
+      staff: sum.staff + 1,
+      basic: sum.basic + row.basic,
+      piecework: sum.piecework + row.piecework,
+      overtime: sum.overtime + row.overtime,
+      due: sum.due + row.due,
+      paid: sum.paid + row.paid,
+      balance: sum.balance + row.balance,
+    }),
+    { staff: 0, basic: 0, piecework: 0, overtime: 0, due: 0, paid: 0, balance: 0 }
+  );
+  return { month, label: monthLabel(month), rows, totals };
 }
 
 /* ---------------- business growth (monthly) ---------------- */

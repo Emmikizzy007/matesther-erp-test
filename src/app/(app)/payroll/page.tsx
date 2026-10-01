@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { ChevronLeft, ChevronRight, HandCoins, History, Plus } from "lucide-react";
+import Link from "next/link";
+import { ChevronLeft, ChevronRight, HandCoins, History, Plus, Printer } from "lucide-react";
 import {
   Card,
   CardHeader,
@@ -121,11 +122,14 @@ export default function PayrollPage() {
       <PageHeader
         title="Worker Payments"
         subtitle="Monthly payroll - piecework on approved work, monthly salaries and overtime. This is part of the month's expenses."
-        action={
+        action={<>
+          <Link href="/payroll/sheet" className="inline-flex min-h-11 items-center gap-2 rounded-lg border border-slate-300 bg-white px-4 text-sm font-bold text-slate-700 hover:bg-slate-50">
+            <Printer className="w-4 h-4" /> Bank Payment Sheet
+          </Link>
           <Btn onClick={() => { setFormErr(""); setOtForm({ workerId: "", workedOn: new Date().toISOString().slice(0, 10), hours: "", amount: "", notes: "" }); setOtModal(true); }}>
             <Plus className="w-4 h-4" /> Record Overtime
           </Btn>
-        }
+        </>}
       />
 
       {/* Month switcher + summary */}
